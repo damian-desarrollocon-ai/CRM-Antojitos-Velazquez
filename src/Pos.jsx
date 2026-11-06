@@ -1,7 +1,12 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import { supabase } from './supabase'
 import { $, iso, fail, hora } from './lib'
 import { Compras, Cierre, Evolucion } from './PosReports.jsx'
+import { useCola, getCola, encolar, quitar, nuevoId, sincronizar, cacheProds, pendientesPorProducto } from './offline'
+
+const readMem = () => { try { return JSON.parse(localStorage.getItem('av_mem')) } catch { return null } }
+const saveMem = m => { try { localStorage.setItem('av_mem', JSON.stringify(m)) } catch { /* sin almacenamiento */ } }
+const salir = () => { try { localStorage.removeItem('av_mem') } catch { /* nada */ } supabase.auth.signOut() }
 
 /* ---------------- avisos de pedidos ---------------- */
 function beep() {
@@ -56,11 +61,12 @@ function Login() {
 }
 
 function useProductos(nid) {
-  const [rows, setRows] = useState([])
+  const [raw, setRaw] = useState(() => cacheProds.get(nid))
+  const cola = useCola(nid)
   const load = useCallback(async () => {
-    const { data } = await supabase.from('productos').select('*')
+    const { data, error } = await supabase.from('productos').select('*')
       .eq('negocio_id', nid).eq('activo', true).order('categoria').order('nombre')
-    setRows(data || [])
+    if (!error && data) { setRaw(data); cacheProds.set(nid, data) }
   }, [nid])
   useEffect(() => {
     load()
@@ -69,6 +75,11 @@ function useProductos(nid) {
       .subscribe()
     return () => { supabase.removeChannel(ch) }
   }, [nid, load])
+  // el stock que se ve ya descuenta las ventas guardadas sin internet
+  const rows = useMemo(() => {
+    const pend = pendientesPorProducto(cola)
+    return raw.map(p => (pend[p.id] ? { ...p, stock: +p.stock - pend[p.id] } : p))
+  }, [raw, cola])
   return [rows, load]
 }
 
@@ -122,7 +133,8 @@ function Cobro({ total, onConfirm, onTicket, onClose }) {
       <div className="modal" onClick={onClose}>
         <div className="mbox center" onClick={e => e.stopPropagation()}>
           <div className="okmark">✔</div>
-          <h2>Venta registrada</h2>
+          <h2>{done.offline ? 'Venta guardada' : 'Venta registrada'}</h2>
+          {done.offline && <p className="mu">Sin internet: se envía sola al volver la conexión.</p>}
           <p className="bigtotal">{$(done.total)}</p>
           {done.cambio > 0 && <p className="cambio">Cambio: {$(done.cambio)}</p>}
           <button className="btn" onClick={() => onTicket(done)}>Imprimir ticket</button>
@@ -185,10 +197,13 @@ function Vender({ nid, prods, reload, onTicket }) {
   const cats = ['Todas', ...new Set(prods.map(p => p.categoria))]
 
   const loadHoy = useCallback(async () => {
-    const { data } = await supabase.from('ventas').select('total').eq('negocio_id', nid).eq('fecha', iso()).eq('estado', 'activa')
+    const { data, error } = await supabase.from('ventas').select('total').eq('negocio_id', nid).eq('fecha', iso()).eq('estado', 'activa')
+    if (error) return
     setHoy({ n: (data || []).length, t: (data || []).reduce((s, v) => s + +v.total, 0) })
   }, [nid])
-  useEffect(() => { loadHoy() }, [loadHoy])
+  const cola = useCola(nid)
+  useEffect(() => { loadHoy() }, [loadHoy, cola.length])
+  const pendT = cola.reduce((s, v) => s + v.total, 0)
 
   const lista = prods.filter(p => (cat === 'Todas' || p.categoria === cat) && p.nombre.toLowerCase().includes(q.toLowerCase()))
   const ids = Object.keys(cart).filter(id => prods.some(p => p.id === id))
@@ -201,17 +216,31 @@ function Vender({ nid, prods, reload, onTicket }) {
   })
 
   const confirmar = async ({ metodo, descuento, pagoCon, nota, neto, cambio }) => {
-    const items = ids.map(producto_id => ({ producto_id, cantidad: cart[producto_id] }))
-    const { data, error } = await supabase.rpc('registrar_venta', {
-      p_negocio: nid, p_items: items, p_metodo: metodo, p_descuento: descuento, p_pago_con: pagoCon, p_nota: nota || null,
-    })
-    if (fail(error)) return null
-    const t = {
-      folio: String(data).slice(0, 6).toUpperCase(), fecha: new Date().toISOString(), descuento, total: neto, metodo,
-      pago_con: pagoCon, cambio,
-      items: ids.map(id => { const p = prods.find(x => x.id === id); return { nombre: p.nombre, cantidad: cart[id], precio: p.precio } }),
+    const cid = nuevoId(), ts = new Date().toISOString()
+    let enviado = false
+    if (navigator.onLine) {
+      const { error, status } = await supabase.rpc('registrar_venta', {
+        p_negocio: nid, p_items: ids.map(producto_id => ({ producto_id, cantidad: cart[producto_id] })), p_metodo: metodo,
+        p_descuento: descuento, p_pago_con: pagoCon, p_nota: nota || null, p_id: cid, p_ts: ts,
+      })
+      if (!error) enviado = true
+      else if (status !== 0) { fail(error); return null }   // error real del servidor
+      // status 0 = no hubo conexión: se guarda en el equipo y se envía después
     }
-    setCart({}); reload(); loadHoy()
+    const lineas = ids.map(id => { const p = prods.find(x => x.id === id); return { producto_id: id, nombre: p.nombre, cantidad: cart[id], precio: +p.precio, costo: +p.costo } })
+    if (!enviado) {
+      encolar(nid, {
+        cid, ts, metodo, descuento, pago_con: pagoCon, nota: nota || null, total: neto,
+        resumen: lineas.map(l => `${l.cantidad}× ${l.nombre}`).join(', '),
+        items: lineas.map(({ producto_id, cantidad, precio, costo }) => ({ producto_id, cantidad, precio, costo })),
+      })
+    }
+    const t = {
+      folio: cid.slice(0, 6).toUpperCase(), fecha: ts, descuento, total: neto, metodo, pago_con: pagoCon, cambio,
+      items: lineas.map(l => ({ nombre: l.nombre, cantidad: l.cantidad, precio: l.precio })), offline: !enviado,
+    }
+    setCart({})
+    if (enviado) { reload(); loadHoy() }
     return t
   }
 
@@ -220,7 +249,7 @@ function Vender({ nid, prods, reload, onTicket }) {
       <div className="vmain">
         <div className="pagehead">
           <h1>Vender</h1>
-          <span className="pill">Hoy {$(hoy.t)} · {hoy.n} ventas</span>
+          <span className="pill">Hoy {$(hoy.t + pendT)} · {hoy.n + cola.length} ventas{cola.length > 0 ? ` · ⏳ ${cola.length} sin sincronizar` : ''}</span>
         </div>
         <input className="search" placeholder="Buscar producto… (Enter agrega el primero)" value={q}
           onChange={e => setQ(e.target.value)}
@@ -356,15 +385,16 @@ function Pedidos({ nid, tick, reload }) {
 }
 
 /* ---------------- historial de ventas ---------------- */
-function Ventas({ nid, reload, onTicket }) {
+function Ventas({ nid, reload, onTicket, online, onSync }) {
   const [d, setD] = useState(iso())
   const [rows, setRows] = useState([])
   const [open, setOpen] = useState(null)
+  const cola = useCola(nid)
   const load = useCallback(async () => {
-    const { data } = await supabase.from('ventas').select('*, venta_items(*)').eq('negocio_id', nid).eq('fecha', d).order('creada_at', { ascending: false })
-    setRows(data || [])
+    const { data, error } = await supabase.from('ventas').select('*, venta_items(*)').eq('negocio_id', nid).eq('fecha', d).order('creada_at', { ascending: false })
+    if (!error) setRows(data || [])
   }, [nid, d])
-  useEffect(() => { load() }, [load])
+  useEffect(() => { load() }, [load, cola.length])
 
   const activas = rows.filter(v => v.estado === 'activa')
   const por = m => activas.filter(v => v.metodo_pago === m).reduce((t, v) => t + +v.total, 0)
@@ -381,13 +411,25 @@ function Ventas({ nid, reload, onTicket }) {
   return (
     <>
       <div className="pagehead"><h1>Ventas</h1><input type="date" className="datein" value={d} onChange={e => setD(e.target.value)} /></div>
+      {cola.length > 0 && (
+        <div className="card info">
+          <div className="row"><b>⏳ Ventas sin sincronizar ({cola.length})</b>{online && <button className="btn s" onClick={onSync}>Sincronizar ahora</button>}</div>
+          {cola.map(v => (
+            <div className="row" key={v.cid}>
+              <div><b>{hora(v.ts)}</b> <span className="mu">· {v.resumen}</span>{v.error && <div className="bad">⚠ {v.error}</div>}</div>
+              <span><b>{$(v.total)}</b> <button className="icon" aria-label="Eliminar" onClick={() => { if (confirm('Esta venta aún no está en el servidor. ¿Eliminarla?')) quitar(nid, v.cid) }}>🗑</button></span>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="stats">
         <div className="stat"><span>Total</span><b>{$(activas.reduce((t, v) => t + +v.total, 0))}</b></div>
         <div className="stat"><span>Efectivo</span><b>{$(por('efectivo'))}</b></div>
         <div className="stat"><span>Transferencia</span><b>{$(por('transferencia'))}</b></div>
         <div className="stat"><span>Tarjeta</span><b>{$(por('tarjeta'))}</b></div>
       </div>
-      {rows.length === 0 && <p className="mu">Sin ventas este día.</p>}
+      {!online && <p className="mu">Sin internet: el historial se muestra cuando regrese la conexión.</p>}
+      {online && rows.length === 0 && <p className="mu">Sin ventas este día.</p>}
       {rows.map(v => (
         <div className={'card vrow' + (v.estado === 'anulada' ? ' void' : '')} key={v.id}>
           <div className="row" onClick={() => setOpen(open === v.id ? null : v.id)} style={{ cursor: 'pointer' }}>
@@ -684,6 +726,31 @@ function Shell({ nid, admin }) {
   const [aviso, setAviso] = useState(null)
   const [ticket, setTicket] = useState(null)
   const [tienda, setTienda] = useState(null)
+  const cola = useCola(nid)
+  const [online, setOnline] = useState(navigator.onLine)
+  const [syncMsg, setSyncMsg] = useState('')
+  const [sinSesion, setSinSesion] = useState(false)
+  const sync = useCallback(async (todo = false) => {
+    const r = await sincronizar(nid, todo === true)
+    setSinSesion(!!r.sinSesion)
+    if (r.ok) {
+      reload()
+      setSyncMsg(`✔ ${r.ok} venta${r.ok === 1 ? '' : 's'} sincronizada${r.ok === 1 ? '' : 's'}`)
+      setTimeout(() => setSyncMsg(''), 5000)
+    }
+  }, [nid, reload])
+  const syncManual = () => sync(true)
+  useEffect(() => {
+    const on = () => { setOnline(true); sync() }, off = () => setOnline(false)
+    window.addEventListener('online', on); window.addEventListener('offline', off)
+    return () => { window.removeEventListener('online', on); window.removeEventListener('offline', off) }
+  }, [sync])
+  useEffect(() => { if (navigator.onLine && getCola(nid).length) sync() }, [nid, sync])
+  useEffect(() => {
+    if (!online || !cola.length) return
+    const t = setInterval(() => sync(), 30000)
+    return () => clearInterval(t)
+  }, [online, cola.length, sync])
 
   const contar = useCallback(async () => {
     const { count } = await supabase.from('pedidos').select('id', { count: 'exact', head: true }).eq('negocio_id', nid).eq('estado', 'nuevo')
@@ -717,10 +784,10 @@ function Shell({ nid, admin }) {
         <aside className="sidebar">
           <Logo />
           <nav>{tabs.map(Btn)}</nav>
-          <button className="out" onClick={() => supabase.auth.signOut()}>Cerrar sesión</button>
+          <button className="out" onClick={salir}>Cerrar sesión</button>
         </aside>
         <div className="main">
-          <div className="topbar"><Logo small /><button className="out" onClick={() => supabase.auth.signOut()}>Salir</button></div>
+          <div className="topbar"><Logo small /><button className="out" onClick={salir}>Salir</button></div>
           {aviso && (
             <div className="toast">
               <span>🔔 Nuevo pedido <b>{aviso.codigo}</b> · {$(aviso.total)}</span>
@@ -729,15 +796,30 @@ function Shell({ nid, admin }) {
             </div>
           )}
           <div className="content">
+            {(!online || cola.length > 0 || syncMsg) && (
+              <div className={'netbar ' + (!online ? 'off' : syncMsg && !cola.length ? 'ok' : 'sync')}>
+                <span>
+                  {!online ? `📴 Sin internet · las ventas se guardan en este equipo${cola.length ? ` (${cola.length} pendientes)` : ''}`
+                    : syncMsg && !cola.length ? syncMsg
+                    : sinSesion ? '🔐 Inicia sesión de nuevo para sincronizar tus ventas pendientes'
+                    : `🔄 ${cola.length} venta${cola.length === 1 ? '' : 's'} por sincronizar${cola.some(v => v.error) ? ' · hay errores (ver Ventas)' : ''}`}
+                </span>
+                {online && cola.length > 0 && <button onClick={sinSesion ? salir : syncManual}>{sinSesion ? 'Iniciar sesión' : 'Sincronizar ahora'}</button>}
+              </div>
+            )}
+            {!online && !['v', 'h'].includes(tab) ? (
+              <div className="card info"><b>Esta sección necesita internet</b><p className="mu">Puedes seguir vendiendo en <b>Vender</b>. Las ventas se enviarán solas cuando regrese la conexión.</p></div>
+            ) : <>
             {tab === 'v' && <Vender nid={nid} prods={prods} reload={reload} onTicket={imprimir} />}
             {tab === 'p' && <Pedidos nid={nid} tick={tick} reload={reload} />}
-            {tab === 'h' && <Ventas nid={nid} reload={reload} onTicket={imprimir} />}
+            {tab === 'h' && <Ventas nid={nid} reload={reload} onTicket={imprimir} online={online} onSync={syncManual} />}
             {tab === 'j' && <Caja nid={nid} />}
             {tab === 's' && <Stock nid={nid} prods={prods} reload={reload} admin={admin} />}
             {tab === 'c' && <><div className="pagehead"><h1>Compras y gastos</h1></div><Compras nid={nid} prods={prods} reload={reload} /></>}
             {tab === 'x' && <><div className="pagehead"><h1>Cierre y corte</h1></div><Cierre nid={nid} admin={admin} /></>}
             {tab === 'e' && <><div className="pagehead"><h1>Evolución del negocio</h1></div><Evolucion nid={nid} /></>}
             {tab === 'a' && admin && <Ajustes nid={nid} />}
+            </>}
           </div>
         </div>
       </div>
@@ -747,7 +829,7 @@ function Shell({ nid, admin }) {
       </nav>
       {mas && (
         <div className="sheet" onClick={() => setMas(false)}>
-          <div onClick={e => e.stopPropagation()}>{tabs.slice(4).map(Btn)}<button onClick={() => supabase.auth.signOut()}><i>🚪</i><span>Salir</span></button></div>
+          <div onClick={e => e.stopPropagation()}>{tabs.slice(4).map(Btn)}<button onClick={salir}><i>🚪</i><span>Salir</span></button></div>
         </div>
       )}
       <Ticket t={ticket} tienda={tienda} />
@@ -758,18 +840,33 @@ function Shell({ nid, admin }) {
 export default function Pos() {
   const [session, setSession] = useState(undefined)
   const [mem, setMem] = useState(null)
+
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => setSession(data.session))
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s))
-    return () => sub.subscription.unsubscribe()
+    supabase.auth.getSession().then(({ data, error }) => {
+      const cache = readMem()
+      // sin internet (o sin poder renovar la sesión) se entra con la última sesión usada en este equipo
+      if (!data.session && cache && (!navigator.onLine || error?.name === 'AuthRetryableFetchError')) {
+        setMem(cache); setSession({ offline: true })
+      } else setSession(data.session)
+    })
+    const { data: sub } = supabase.auth.onAuthStateChange((ev, s) => {
+      if (s) setSession(s)
+      else if (ev === 'SIGNED_OUT') setSession(null)
+    })
+    const volvio = () => supabase.auth.getSession().then(({ data }) => { if (data.session) setSession(data.session) })
+    window.addEventListener('online', volvio)
+    return () => { sub.subscription.unsubscribe(); window.removeEventListener('online', volvio) }
   }, [])
   useEffect(() => {
     if (!session) { setMem(null); return }
-    supabase.from('miembros').select('negocio_id,rol').limit(1).maybeSingle().then(({ data }) => setMem(data || false))
+    if (session.offline) return
+    supabase.from('miembros').select('negocio_id,rol').limit(1).maybeSingle().then(({ data, error }) => {
+      if (data) { saveMem(data); setMem(data) } else setMem(error ? (readMem() || false) : false)
+    })
   }, [session])
 
   if (session === undefined || (session && mem === null)) return <p style={{ padding: 20 }}>Cargando…</p>
   if (!session) return <Login />
-  if (mem === false) return <div className="login"><div className="card">Tu usuario no está asignado a ningún negocio. Corre el seed.sql con tu correo.<button className="btn" onClick={() => supabase.auth.signOut()}>Salir</button></div></div>
+  if (mem === false) return <div className="login"><div className="card">Tu usuario no está asignado a ningún negocio. Corre el seed.sql con tu correo.<button className="btn" onClick={salir}>Salir</button></div></div>
   return <Shell nid={mem.negocio_id} admin={['admin', 'socio'].includes(mem.rol)} />
 }
