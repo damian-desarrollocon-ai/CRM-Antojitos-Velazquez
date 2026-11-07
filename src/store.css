@@ -98,3 +98,16 @@
 .st-track li i{display:grid;place-items:center;width:46px;height:46px;border-radius:50%;background:#f1eee6;margin:0 auto 6px;font-style:normal;font-size:22px}
 .st-track li.done{opacity:1}.st-track li.done i{background:var(--gold)}
 .st-btns{margin-top:6px}
+
+/* ---------- banner de instalación ---------- */
+.st-install{display:flex;align-items:center;gap:12px;background:#fff8e1;border-bottom:1px solid #f0dfa8;padding:10px 14px}
+.st-install img{width:44px;height:44px;border-radius:12px;flex:none}
+.st-install div{flex:1;min-width:0;line-height:1.25}.st-install b{display:block;font-size:15.5px}.st-install small{color:var(--mu);font-size:13.5px}
+.st-install .go{flex:none;background:var(--ac);color:#fff;border:0;border-radius:99px;padding:10px 16px;font-weight:700;font-size:15px;text-decoration:none;white-space:nowrap}
+.st-install .no{flex:none;background:none;border:0;font-size:18px;color:var(--mu);width:32px;height:32px}
+@media(max-width:480px){.st-install small{display:none}}
+
+/* ---------- aviso de privacidad ---------- */
+.st-legal{max-width:760px;margin:0 auto;padding:24px 18px 60px}
+.st-legal h1{font-size:32px;margin-bottom:4px}.st-legal h2{font-size:21px;margin:26px 0 6px}
+.st-legal p,.st-legal li{font-size:17px;color:#333}.st-legal ul{padding-left:22px}.st-legal li{margin:4px 0}

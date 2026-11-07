@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from './supabase'
 import { $, EMOJI, ORDEN } from './lib'
+import InstallBanner from './InstallBanner.jsx'
 import './store.css'
 
 const LS = {
@@ -109,6 +110,7 @@ function Footer({ tienda }) {
       {tienda.horario && <p>🕒 {tienda.horario}</p>}
       {tienda.zona && <p>🛵 Entregamos en: {tienda.zona}</p>}
       {tienda.whatsapp && <p>💬 <a href={'https://wa.me/' + tienda.whatsapp} target="_blank" rel="noreferrer">WhatsApp +{tienda.whatsapp}</a></p>}
+      <p><a href="/privacidad">Aviso de privacidad</a></p>
     </footer>
   )
 }
@@ -182,7 +184,7 @@ function Checkout({ tienda, items, sub, envio, total, tipo, setTipo, setQty, onB
           </div>
           {err && <p className="st-err">{err}</p>}
           <button className="st-cta" disabled={busy || !items.length}>{busy ? 'Enviando…' : `Confirmar pedido · ${$(total)}`}</button>
-          <p className="st-fine">Al confirmar, el negocio recibe tu pedido al instante.</p>
+          <p className="st-fine">Al confirmar, el negocio recibe tu pedido al instante. Consulta el <a href="/privacidad" target="_blank" rel="noreferrer">aviso de privacidad</a>.</p>
         </div>
       </form>
     </div>
@@ -319,6 +321,7 @@ export default function Store({ codigo: codigoUrl }) {
   return (
     <div className="st">
       <Top tienda={tienda} onHome={home} />
+      <InstallBanner playUrl={import.meta.env.VITE_PLAY_URL} apkUrl={import.meta.env.VITE_APK_URL} />
       <section className="st-hero">
         <div className="st-hero-in">
           <span className={'st-pill ' + (tienda.abierto ? 'ok' : 'off')}>{tienda.abierto ? '● Abierto · recibiendo pedidos' : '● Cerrado por ahora'}</span>
