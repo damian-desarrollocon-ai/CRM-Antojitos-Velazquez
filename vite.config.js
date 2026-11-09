@@ -35,6 +35,8 @@ export default defineConfig({
         navigateFallbackDenylist: [/^\/\.well-known\//],
         cleanupOutdatedCaches: true,
         runtimeCaching: [
+          // fotos de productos: nombre único por foto, se pueden guardar sin riesgo
+          { urlPattern: /^https:\/\/[a-z0-9]+\.supabase\.co\/storage\/v1\/object\/public\/productos\/.*/i, handler: 'CacheFirst', options: { cacheName: 'fotos', cacheableResponse: { statuses: [0, 200] }, expiration: { maxEntries: 200, maxAgeSeconds: 2592000 } } },
           { urlPattern: /^https:\/\/fonts\.(googleapis|gstatic)\.com\/.*/i, handler: 'CacheFirst', options: { cacheName: 'fuentes', expiration: { maxEntries: 10, maxAgeSeconds: 31536000 } } },
         ],
       },

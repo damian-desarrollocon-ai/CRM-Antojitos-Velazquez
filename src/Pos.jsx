@@ -3,6 +3,7 @@ import { supabase } from './supabase'
 import { $, iso, fail, hora } from './lib'
 import { Compras, Cierre, Evolucion } from './PosReports.jsx'
 import QrCard from './QrCard.jsx'
+import { subirFoto, borrarFoto } from './fotos'
 import { useCola, getCola, encolar, quitar, nuevoId, sincronizar, cacheProds, pendientesPorProducto } from './offline'
 
 const readMem = () => { try { return JSON.parse(localStorage.getItem('av_mem')) } catch { return null } }
@@ -369,6 +370,7 @@ function Pedidos({ nid, tick, reload }) {
                 {(p.pedido_items || []).map(i => <li key={i.id}><span>{+i.cantidad} × {i.nombre}</span><span>{$(i.cantidad * i.precio)}</span></li>)}
               </ul>
               {p.notas && <p className="note">📝 {p.notas}</p>}
+              {p.metodo_pago === 'transferencia' && p.estado !== 'entregado' && <p className="note">💳 Confirma que llegó la transferencia antes de entregar.</p>}
               <div className="row"><span className="mu">Envío {$(p.envio)}</span><b className="amt">Total {$(p.total)}</b></div>
               {p.metodo_pago === 'efectivo' && p.paga_con > 0 && <p className="mu">Paga con {$(p.paga_con)} · cambio {$(p.paga_con - p.total)}</p>}
               {sig && (
@@ -568,9 +570,30 @@ function Caja({ nid }) {
 }
 
 /* ---------------- stock y productos ---------------- */
-function ProductoModal({ p, onClose, onSave }) {
+function ProductoModal({ p, onClose, onSave, onFoto }) {
   const [f, setF] = useState({ ...p })
+  const [subiendo, setSubiendo] = useState(false)
   const set = (k, v) => setF({ ...f, [k]: v })
+  // la foto se sube y se guarda al momento (no hay que acordarse de presionar Guardar)
+  const elegir = async e => {
+    const file = e.target.files && e.target.files[0]
+    e.target.value = ''
+    if (!file) return
+    setSubiendo(true)
+    try {
+      const url = await subirFoto(p.negocio_id, p.id, file, f.imagen_url)
+      const { error } = await supabase.from('productos').update({ imagen_url: url }).eq('id', p.id)
+      if (error) throw error
+      setF(x => ({ ...x, imagen_url: url })); onFoto()
+    } catch (err) { alert('No se pudo subir la foto: ' + (err.message || err)) }
+    setSubiendo(false)
+  }
+  const quitar = async () => {
+    if (!confirm('¿Quitar la foto de este producto?')) return
+    const { error } = await supabase.from('productos').update({ imagen_url: null }).eq('id', p.id)
+    if (fail(error)) return
+    borrarFoto(f.imagen_url); setF(x => ({ ...x, imagen_url: null })); onFoto()
+  }
   return (
     <div className="modal" onClick={onClose}>
       <div className="mbox" onClick={e => e.stopPropagation()}>
@@ -581,8 +604,16 @@ function ProductoModal({ p, onClose, onSave }) {
         <input value={f.categoria} onChange={e => set('categoria', e.target.value)} />
         <label className="lbl">Descripción (se ve en la tienda)</label>
         <textarea rows={2} value={f.descripcion || ''} onChange={e => set('descripcion', e.target.value)} />
-        <label className="lbl">Foto (enlace de la imagen)</label>
-        <input placeholder="https://…" value={f.imagen_url || ''} onChange={e => set('imagen_url', e.target.value)} />
+        <label className="lbl">Foto del producto</label>
+        <div className="foto">
+          <div className="foto-prev">{f.imagen_url ? <img src={f.imagen_url} alt="" /> : <span>📷</span>}</div>
+          <div className="foto-acts">
+            <label className="btn s">📷 Tomar foto<input type="file" accept="image/*" capture="environment" hidden onChange={elegir} /></label>
+            <label className="btn s">🖼 Elegir de galería<input type="file" accept="image/*" hidden onChange={elegir} /></label>
+            {f.imagen_url && <button type="button" className="btn s" onClick={quitar}>Quitar foto</button>}
+          </div>
+        </div>
+        {subiendo && <p className="mu">Subiendo foto…</p>}
         <label className="chk"><input type="checkbox" checked={f.en_linea} onChange={e => set('en_linea', e.target.checked)} /> Visible en la tienda en línea</label>
         <label className="chk"><input type="checkbox" checked={f.destacado} onChange={e => set('destacado', e.target.checked)} /> Destacado (aparece arriba)</label>
         <label className="chk"><input type="checkbox" checked={f.activo} onChange={e => set('activo', e.target.checked)} /> Activo en el punto de venta</label>
@@ -640,7 +671,7 @@ function Stock({ nid, prods, reload, admin }) {
           <tbody>
             {all.map(p => (
               <tr key={p.id} className={p.activo ? '' : 'inactive'}>
-                <td className={p.stock <= p.stock_min ? 'bad' : ''}>{p.en_linea && p.activo ? '🛵 ' : ''}{p.nombre}</td>
+                <td className={p.stock <= p.stock_min ? 'bad' : ''}>{p.imagen_url && <img className="thumb" src={p.imagen_url} alt="" />}{p.en_linea && p.activo ? '🛵 ' : ''}{p.nombre}</td>
                 <td><input className="n" type="number" key={p.id + 's' + p.stock} defaultValue={+p.stock}
                   onBlur={e => +e.target.value !== +p.stock && ajustar(p.id, e.target.value)} /></td>
                 <td>{num(p, 'stock_min', 1)}</td><td>{num(p, 'precio', 1)}</td><td>{num(p, 'costo', 0.01)}</td>
@@ -664,7 +695,7 @@ function Stock({ nid, prods, reload, admin }) {
           </div>
         </>
       )}
-      {ed && <ProductoModal p={ed} onClose={() => setEd(null)} onSave={guardar} />}
+      {ed && <ProductoModal p={ed} onClose={() => setEd(null)} onSave={guardar} onFoto={() => { load(); reload() }} />}
     </>
   )
 }
@@ -677,8 +708,10 @@ function Ajustes({ nid }) {
   const set = (k, v) => setT({ ...t, [k]: v })
   const guardar = async () => {
     const { negocio_id, ...r } = t
+    const cl = (r.transf_clabe || '').replace(/\D/g, '')
+    if (cl && cl.length !== 18 && !confirm(`La CLABE debe tener 18 dígitos y tiene ${cl.length}. ¿Guardar de todos modos?`)) return
     const { error } = await supabase.from('tienda').update({
-      ...r, costo_envio: +r.costo_envio || 0, pedido_minimo: +r.pedido_minimo || 0,
+      ...r, transf_clabe: cl || null, costo_envio: +r.costo_envio || 0, pedido_minimo: +r.pedido_minimo || 0,
       envio_gratis_desde: r.envio_gratis_desde === '' || r.envio_gratis_desde == null ? null : +r.envio_gratis_desde,
     }).eq('negocio_id', nid)
     if (!fail(error)) alert('Guardado')
@@ -712,6 +745,12 @@ function Ajustes({ nid }) {
         {txt('zona', 'Zona de entrega', 'Colonias o cobertura')}
         {txt('horario', 'Horario', 'Lun a Sáb · 8:00 a 20:00')}
         {txt('direccion', 'Dirección del negocio')}
+        <h3>Datos para transferencias</h3>
+        <p className="mu">Solo los ve el cliente que elige pagar por transferencia, después de confirmar su pedido.</p>
+        {txt('transf_banco', 'Banco', 'BBVA, Banorte, Spin…')}
+        {txt('transf_titular', 'Titular de la cuenta')}
+        {txt('transf_clabe', 'CLABE (18 dígitos)')}
+        {txt('transf_nota', 'Mensaje para el cliente (opcional)', 'Ej. Envía tu comprobante por WhatsApp')}
         <button className="btn" onClick={guardar}>Guardar cambios</button>
       </div>
     </>

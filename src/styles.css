@@ -155,3 +155,11 @@ input.n{width:84px;text-align:right;padding:8px 10px;margin:0}
   body.printing-qr .qr-print img{width:100%;height:100%;object-fit:contain}
   body.printing-qr .ticket-print{display:none!important}
 }
+
+/* ---------- fotos de productos ---------- */
+.foto{display:flex;gap:14px;align-items:center;margin-top:8px}
+.foto-prev{flex:none;width:104px;height:104px;border-radius:14px;background:#f4efe3;border:1px solid var(--bd);display:grid;place-items:center;font-size:36px;overflow:hidden}
+.foto-prev img{width:100%;height:100%;object-fit:cover}
+.foto-acts{display:flex;flex-direction:column;gap:8px;align-items:flex-start}
+.foto-acts .btn.s{margin:0;cursor:pointer}
+.thumb{width:32px;height:32px;border-radius:8px;object-fit:cover;vertical-align:middle;margin-right:8px}

@@ -145,7 +145,7 @@ function Checkout({ tienda, items, sub, envio, total, tipo, setTipo, setQty, onB
     onDone(data.codigo)
   }
 
-  const metodos = [['efectivo', '💵 Efectivo', 'Pagas al recibir'], ['transferencia', '📲 Transferencia', 'Te enviamos los datos por WhatsApp'], ['tarjeta', '💳 Tarjeta', 'Terminal al entregar']]
+  const metodos = [['efectivo', '💵 Efectivo', 'Pagas al recibir'], ['transferencia', '📲 Transferencia', 'Te mostramos los datos al confirmar'], ['tarjeta', '💳 Tarjeta', 'Terminal al entregar']]
 
   return (
     <div className="st-co">
@@ -221,6 +221,28 @@ function Gracias({ codigo, tienda, onNuevo }) {
 
   return (
     <div className="st-ok">
+      {p.metodo_pago === 'transferencia' && !['entregado', 'cancelado'].includes(p.estado) && (
+        <div className="st-box st-transf">
+          <h3>💳 Datos para tu transferencia</h3>
+          {p.transferencia && p.transferencia.clabe ? (
+            <>
+              <p>Transfiere <b>{$(p.total)}</b> y envíanos tu comprobante con tu código <b>{p.codigo}</b>.</p>
+              <dl>
+                {p.transferencia.banco && <><dt>Banco</dt><dd>{p.transferencia.banco}</dd></>}
+                {p.transferencia.titular && <><dt>Titular</dt><dd>{p.transferencia.titular}</dd></>}
+                <dt>CLABE</dt>
+                <dd className="clabe">{p.transferencia.clabe.replace(/^(\d{3})(\d{3})(\d{11})(\d)$/, '$1 $2 $3 $4')}
+                  <button type="button" onClick={() => navigator.clipboard?.writeText(p.transferencia.clabe).then(() => alert('CLABE copiada'))}>Copiar</button></dd>
+              </dl>
+              {p.transferencia.nota && <p className="st-fine">{p.transferencia.nota}</p>}
+            </>
+          ) : <p>Te enviaremos los datos para transferir por WhatsApp.</p>}
+          {tienda?.whatsapp && (
+            <a className="st-cta wa" target="_blank" rel="noreferrer"
+              href={`https://wa.me/${tienda.whatsapp}?text=${encodeURIComponent(`Hola, te envío el comprobante de mi pedido ${p.codigo} por ${$(p.total)}.`)}`}>Enviar comprobante por WhatsApp</a>
+          )}
+        </div>
+      )}
       <div className="st-box">
         <p className="st-fine">Pedido</p>
         <h1 className="st-code">{p.codigo}</h1>

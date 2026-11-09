@@ -111,3 +111,10 @@
 .st-legal{max-width:760px;margin:0 auto;padding:24px 18px 60px}
 .st-legal h1{font-size:32px;margin-bottom:4px}.st-legal h2{font-size:21px;margin:26px 0 6px}
 .st-legal p,.st-legal li{font-size:17px;color:#333}.st-legal ul{padding-left:22px}.st-legal li{margin:4px 0}
+
+/* ---------- datos de transferencia ---------- */
+.st-transf{grid-column:1/-1;border-color:var(--gold);background:#fffbeb}
+.st-transf dl{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;margin:12px 0}
+.st-transf dt{color:var(--mu);font-size:15px}.st-transf dd{margin:0;font-weight:700;font-size:17px}
+.st-transf .clabe{font-size:20px;letter-spacing:.03em;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.st-transf .clabe button{background:#111;color:var(--gold);border:0;border-radius:99px;padding:6px 14px;font-weight:700;font-size:14px}
