@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useMemo } from 'react'
 import { supabase } from './supabase'
 import { $, iso, fail, hora } from './lib'
 import { Compras, Cierre, Evolucion } from './PosReports.jsx'
+import QrCard from './QrCard.jsx'
 import { useCola, getCola, encolar, quitar, nuevoId, sincronizar, cacheProds, pendientesPorProducto } from './offline'
 
 const readMem = () => { try { return JSON.parse(localStorage.getItem('av_mem')) } catch { return null } }
@@ -358,7 +359,7 @@ function Pedidos({ nid, tick, reload }) {
                 <b className="cod">{p.codigo}</b>
                 <span className={'tag ' + p.estado}>{ESTADO_TXT[p.estado]}</span>
               </div>
-              <p className="mu">{hora(p.creado_at)} · {p.tipo === 'domicilio' ? '🛵 A domicilio' : '🏪 Recoger'} · {p.metodo_pago}</p>
+              <p className="mu">{hora(p.creado_at)} · {p.tipo === 'domicilio' ? '🛵 A domicilio' : '🏪 Recoger'} · {p.metodo_pago}{p.origen ? ` · origen: ${p.origen}` : ''}</p>
               <p><b>{p.cliente}</b> · <a href={'tel:' + p.telefono}>{p.telefono}</a> · <a href={'https://wa.me/52' + p.telefono.slice(-10)} target="_blank" rel="noreferrer">WhatsApp</a></p>
               {p.tipo === 'domicilio' && (
                 <p>📍 <a href={'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(p.direccion || '')} target="_blank" rel="noreferrer">{p.direccion}</a>
@@ -693,6 +694,7 @@ function Ajustes({ nid }) {
         <input readOnly value={url} onFocus={e => e.target.select()} />
         <button className="btn s wide" onClick={() => navigator.clipboard?.writeText(url).then(() => alert('Enlace copiado'))}>Copiar enlace</button>
       </div>
+      <QrCard nid={nid} tienda={t} />
       <div className="card">
         <label className="chk big"><input type="checkbox" checked={t.abierto} onChange={e => set('abierto', e.target.checked)} /> Recibiendo pedidos ahora (tienda abierta)</label>
         <label className="chk"><input type="checkbox" checked={t.acepta_domicilio} onChange={e => set('acepta_domicilio', e.target.checked)} /> Entrega a domicilio</label>

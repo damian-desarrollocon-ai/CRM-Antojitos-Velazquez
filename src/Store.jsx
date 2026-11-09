@@ -8,6 +8,16 @@ const LS = {
   get(k, d) { try { const v = JSON.parse(localStorage.getItem(k)); return v ?? d } catch { return d } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)) } catch { /* sin almacenamiento */ } },
 }
+// de dónde llegó el cliente (?o=qr, ?o=fb…): se recuerda para etiquetar su pedido
+const getOrigen = capturar => {
+  try {
+    if (capturar) {
+      const o = new URLSearchParams(window.location.search).get('o')
+      if (o) localStorage.setItem('av_origen', o.toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 20))
+    }
+    return localStorage.getItem('av_origen') || null
+  } catch { return null }
+}
 const PASOS = ['nuevo', 'preparando', 'listo', 'entregado']
 const etiqueta = (e, tipo) => ({
   nuevo: 'Pedido recibido', preparando: 'Preparando tu pedido',
@@ -127,7 +137,7 @@ function Checkout({ tienda, items, sub, envio, total, tipo, setTipo, setQty, onB
       p_negocio: tienda.negocio_id, p_cliente: f.nombre, p_telefono: f.telefono, p_tipo: tipo,
       p_direccion: tipo === 'domicilio' ? f.direccion : null, p_referencias: tipo === 'domicilio' ? f.referencias : null,
       p_metodo: f.metodo, p_paga_con: f.metodo === 'efectivo' && f.pagaCon ? +f.pagaCon : null, p_notas: f.notas || null,
-      p_items: items.map(i => ({ producto_id: i.id, cantidad: i.q })),
+      p_items: items.map(i => ({ producto_id: i.id, cantidad: i.q })), p_origen: getOrigen(),
     })
     setBusy(false)
     if (error) return setErr(error.message)
@@ -255,6 +265,7 @@ export default function Store({ codigo: codigoUrl }) {
   const [q, setQ] = useState('')
   const [activo, setActivo] = useState(null)
 
+  useEffect(() => { getOrigen(true) }, [])
   useEffect(() => { LS.set('av_cart', cart) }, [cart])
   useEffect(() => { LS.set('av_tipo', tipo) }, [tipo])
   useEffect(() => {
