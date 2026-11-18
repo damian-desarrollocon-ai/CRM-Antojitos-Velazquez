@@ -1,9 +1,9 @@
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import { supabase } from './supabase'
-import { $, iso, fail, hora } from './lib'
+import { $, iso, addDays, fail, hora } from './lib'
 import { Compras, Cierre, Evolucion } from './PosReports.jsx'
 import QrCard from './QrCard.jsx'
-import { subirFoto, borrarFoto } from './fotos'
+import { subirFoto, borrarFoto, mejorarConIA } from './fotos'
 import { useCola, getCola, encolar, quitar, nuevoId, sincronizar, cacheProds, pendientesPorProducto } from './offline'
 
 const readMem = () => { try { return JSON.parse(localStorage.getItem('av_mem')) } catch { return null } }
@@ -388,19 +388,62 @@ function Pedidos({ nid, tick, reload }) {
 }
 
 /* ---------------- historial de ventas ---------------- */
-function Ventas({ nid, reload, onTicket, online, onSync }) {
-  const [d, setD] = useState(iso())
+const DIA_CORTO = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb']
+const fechaCorta = f => { const d = new Date(f + 'T12:00:00'); return `${DIA_CORTO[d.getDay()]} ${d.getDate()}/${d.getMonth() + 1}` }
+const lineas = v => v.venta_items || []
+
+function Ventas({ nid, reload, onTicket, online, onSync, admin }) {
+  const hoy = iso()
+  const [rango, setRango] = useState('hoy')
+  const [desde, setDesde] = useState(hoy)
+  const [hasta, setHasta] = useState(hoy)
+  const [metodo, setMetodo] = useState('todos')
+  const [q, setQ] = useState('')
+  const [vista, setVista] = useState('ventas')
   const [rows, setRows] = useState([])
   const [open, setOpen] = useState(null)
   const cola = useCola(nid)
+
+  const preset = k => {
+    setRango(k)
+    if (k === 'hoy') { setDesde(hoy); setHasta(hoy) }
+    else if (k === 'ayer') { const a = addDays(hoy, -1); setDesde(a); setHasta(a) }
+    else if (k === '7') { setDesde(addDays(hoy, -6)); setHasta(hoy) }
+    else if (k === 'mes') { setDesde(hoy.slice(0, 8) + '01'); setHasta(hoy) }
+  }
   const load = useCallback(async () => {
-    const { data, error } = await supabase.from('ventas').select('*, venta_items(*)').eq('negocio_id', nid).eq('fecha', d).order('creada_at', { ascending: false })
+    const { data, error } = await supabase.from('ventas').select('*, venta_items(*)').eq('negocio_id', nid)
+      .gte('fecha', desde).lte('fecha', hasta).order('creada_at', { ascending: false }).range(0, 999)
     if (!error) setRows(data || [])
-  }, [nid, d])
+  }, [nid, desde, hasta])
   useEffect(() => { load() }, [load, cola.length])
 
-  const activas = rows.filter(v => v.estado === 'activa')
-  const por = m => activas.filter(v => v.metodo_pago === m).reduce((t, v) => t + +v.total, 0)
+  const ql = q.trim().toLowerCase()
+  const lista = rows.filter(v =>
+    (metodo === 'todos' || (metodo === 'online' ? v.origen === 'online' : v.metodo_pago === metodo)) &&
+    (!ql || (v.nota || '').toLowerCase().includes(ql) || (v.cliente || '').toLowerCase().includes(ql) ||
+      lineas(v).some(i => i.nombre.toLowerCase().includes(ql))))
+  const activas = lista.filter(v => v.estado === 'activa')
+  const suma = (arr, f) => arr.reduce((t, v) => t + f(v), 0)
+  const por = m => suma(activas.filter(v => v.metodo_pago === m), v => +v.total)
+  const ganancia = suma(activas, v => +v.total - +v.costo_total)
+
+  const productos = useMemo(() => {
+    const m = {}
+    activas.forEach(v => lineas(v).forEach(i => {
+      const x = m[i.nombre] || (m[i.nombre] = { n: i.nombre, q: 0, v: 0, g: 0 })
+      x.q += +i.cantidad; x.v += i.cantidad * i.precio; x.g += i.cantidad * (i.precio - i.costo)
+    }))
+    return Object.values(m).filter(p => !ql || p.n.toLowerCase().includes(ql)).sort((a, b) => b.v - a.v)
+  }, [activas, ql])
+
+  const dias = []
+  lista.forEach(v => {
+    let g = dias[dias.length - 1]
+    if (!g || g.f !== v.fecha) { g = { f: v.fecha, rows: [] }; dias.push(g) }
+    g.rows.push(v)
+  })
+
   const anular = async v => {
     if (!confirm('¿Anular esta venta y regresar el stock?')) return
     const { error } = await supabase.rpc('anular_venta', { p_venta: v.id })
@@ -410,10 +453,21 @@ function Ventas({ nid, reload, onTicket, online, onSync }) {
     folio: v.id.slice(0, 6).toUpperCase(), fecha: v.creada_at, descuento: +v.descuento, total: +v.total, metodo: v.metodo_pago,
     pago_con: +v.pago_con || 0, cambio: +v.cambio || 0, items: v.venta_items,
   })
+  const csv = () => {
+    const esc = x => '"' + String(x ?? '').replace(/"/g, '""') + '"'
+    const filas = [['Fecha', 'Hora', 'Folio', 'Producto', 'Cantidad', 'Precio', 'Importe', 'Método', 'Origen', 'Estado', 'Cliente', 'Nota']]
+    lista.forEach(v => lineas(v).forEach(i => filas.push([v.fecha, hora(v.creada_at), v.id.slice(0, 6).toUpperCase(), i.nombre,
+      +i.cantidad, +i.precio, i.cantidad * i.precio, v.metodo_pago, v.origen, v.estado, v.cliente, v.nota])))
+    const blob = new Blob(['\ufeff' + filas.map(f => f.map(esc).join(',')).join('\n')], { type: 'text/csv;charset=utf-8' })
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob); a.download = `ventas_${desde}_${hasta}.csv`; a.click()
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000)
+  }
 
   return (
     <>
-      <div className="pagehead"><h1>Ventas</h1><input type="date" className="datein" value={d} onChange={e => setD(e.target.value)} /></div>
+      <div className="pagehead"><h1>Ventas</h1>{online && lista.length > 0 && <button className="btn s" onClick={csv}>⬇ Descargar Excel (CSV)</button>}</div>
+
       {cola.length > 0 && (
         <div className="card info">
           <div className="row"><b>⏳ Ventas sin sincronizar ({cola.length})</b>{online && <button className="btn s" onClick={onSync}>Sincronizar ahora</button>}</div>
@@ -425,35 +479,88 @@ function Ventas({ nid, reload, onTicket, online, onSync }) {
           ))}
         </div>
       )}
+
+      <div className="chips">
+        {[['hoy', 'Hoy'], ['ayer', 'Ayer'], ['7', 'Últimos 7 días'], ['mes', 'Este mes'], ['rango', 'Elegir fechas']].map(([k, t]) => (
+          <button key={k} className={rango === k ? 'on' : ''} onClick={() => k === 'rango' ? setRango('rango') : preset(k)}>{t}</button>
+        ))}
+      </div>
+      {rango === 'rango' && (
+        <div className="row2">
+          <input type="date" value={desde} max={hasta} onChange={e => setDesde(e.target.value)} />
+          <input type="date" value={hasta} min={desde} onChange={e => setHasta(e.target.value)} />
+        </div>
+      )}
+
       <div className="stats">
-        <div className="stat"><span>Total</span><b>{$(activas.reduce((t, v) => t + +v.total, 0))}</b></div>
+        <div className="stat"><span>Ventas ({activas.length})</span><b>{$(suma(activas, v => +v.total))}</b></div>
         <div className="stat"><span>Efectivo</span><b>{$(por('efectivo'))}</b></div>
         <div className="stat"><span>Transferencia</span><b>{$(por('transferencia'))}</b></div>
         <div className="stat"><span>Tarjeta</span><b>{$(por('tarjeta'))}</b></div>
+        {admin && <div className="stat hl"><span>Ganancia</span><b>{$(ganancia)}</b></div>}
       </div>
+
+      <input className="search" placeholder="Buscar producto, cliente o nota…" value={q} onChange={e => setQ(e.target.value)} />
+      <div className="chips">
+        {[['todos', 'Todos los pagos'], ['efectivo', 'Efectivo'], ['transferencia', 'Transferencia'], ['tarjeta', 'Tarjeta'], ['online', '🛵 En línea']].map(([k, t]) => (
+          <button key={k} className={metodo === k ? 'on' : ''} onClick={() => setMetodo(k)}>{t}</button>
+        ))}
+      </div>
+      <div className="seg">
+        <button className={vista === 'ventas' ? 'on' : ''} onClick={() => setVista('ventas')}>🧾 Ventas</button>
+        <button className={vista === 'productos' ? 'on' : ''} onClick={() => setVista('productos')}>📦 Qué se vendió</button>
+      </div>
+
       {!online && <p className="mu">Sin internet: el historial se muestra cuando regrese la conexión.</p>}
-      {online && rows.length === 0 && <p className="mu">Sin ventas este día.</p>}
-      {rows.map(v => (
-        <div className={'card vrow' + (v.estado === 'anulada' ? ' void' : '')} key={v.id}>
-          <div className="row" onClick={() => setOpen(open === v.id ? null : v.id)} style={{ cursor: 'pointer' }}>
-            <div>
-              <b>{hora(v.creada_at)}</b> <span className="mu">· {v.metodo_pago}{v.origen === 'online' ? ' · 🛵 en línea' : ''}{v.nota ? ' · ' + v.nota : ''}</span>
-              {v.estado === 'anulada' && <span className="tag cancelado">Anulada</span>}
-            </div>
-            <b className="amt">{$(v.total)}</b>
-          </div>
-          {open === v.id && (
-            <>
-              <ul className="items">
-                {v.venta_items.map(i => <li key={i.id}><span>{+i.cantidad} × {i.nombre}</span><span>{$(i.cantidad * i.precio)}</span></li>)}
-                {+v.descuento > 0 && <li><span>Descuento</span><span>−{$(v.descuento)}</span></li>}
-              </ul>
-              <div className="acts">
-                <button className="btn s" onClick={() => ticket(v)}>Ticket</button>
-                {v.estado === 'activa' && <button className="btn s" onClick={() => anular(v)}>Anular</button>}
-              </div>
-            </>
+      {online && lista.length === 0 && <p className="mu">No hay ventas con estos filtros.</p>}
+
+      {vista === 'productos' && lista.length > 0 && (
+        <div className="wrap card flush">
+          <table>
+            <thead><tr><th>Producto</th><th>Piezas</th><th>Ventas</th>{admin && <th>Ganancia</th>}</tr></thead>
+            <tbody>
+              {productos.map(p => <tr key={p.n}><td>{p.n}</td><td>{+p.q.toFixed(2)}</td><td>{$(p.v)}</td>{admin && <td>{$(p.g)}</td>}</tr>)}
+              <tr><th>Total</th><th>{+productos.reduce((t, p) => t + p.q, 0).toFixed(2)}</th><th>{$(productos.reduce((t, p) => t + p.v, 0))}</th>{admin && <th>{$(productos.reduce((t, p) => t + p.g, 0))}</th>}</tr>
+            </tbody>
+          </table>
+          <p className="mu" style={{ padding: '0 8px' }}>Importes a precio de lista, antes de descuentos.</p>
+        </div>
+      )}
+
+      {vista === 'ventas' && dias.map(g => (
+        <div key={g.f}>
+          {(desde !== hasta || dias.length > 1) && (
+            <h3 className="dayhead">{fechaCorta(g.f)} <span className="mu">· {$(suma(g.rows.filter(v => v.estado === 'activa'), v => +v.total))} · {g.rows.filter(v => v.estado === 'activa').length} ventas</span></h3>
           )}
+          {g.rows.map(v => (
+            <div className={'card vrow' + (v.estado === 'anulada' ? ' void' : '')} key={v.id}>
+              <div className="row" onClick={() => setOpen(open === v.id ? null : v.id)} style={{ cursor: 'pointer' }}>
+                <div>
+                  <b>{hora(v.creada_at)}</b>
+                  <span className="tag">{v.metodo_pago}</span>
+                  {v.origen === 'online' && <span className="tag nuevo">🛵 en línea</span>}
+                  {v.estado === 'anulada' && <span className="tag cancelado">Anulada</span>}
+                </div>
+                <b className="amt">{$(v.total)}</b>
+              </div>
+              <div className="vitems">{lineas(v).map(i => `${+i.cantidad}× ${i.nombre}`).join(' · ') || 'Sin detalle'}</div>
+              {(v.cliente || v.nota) && <div className="mu">{[v.cliente, v.nota].filter(Boolean).join(' · ')}</div>}
+              {open === v.id && (
+                <>
+                  <ul className="items">
+                    {lineas(v).map(i => <li key={i.id}><span>{+i.cantidad} × {i.nombre} <span className="mu">({$(i.precio)} c/u)</span></span><span>{$(i.cantidad * i.precio)}</span></li>)}
+                    {+v.descuento > 0 && <li><span>Descuento</span><span>−{$(v.descuento)}</span></li>}
+                  </ul>
+                  {+v.pago_con > 0 && <p className="mu">Pagó con {$(v.pago_con)} · cambio {$(v.cambio)}</p>}
+                  {admin && <p className="mu">Ganancia de esta venta: <b>{$(+v.total - +v.costo_total)}</b></p>}
+                  <div className="acts">
+                    <button className="btn s" onClick={() => ticket(v)}>Ticket</button>
+                    {v.estado === 'activa' && <button className="btn s" onClick={() => anular(v)}>Anular</button>}
+                  </div>
+                </>
+              )}
+            </div>
+          ))}
         </div>
       ))}
     </>
@@ -588,6 +695,31 @@ function ProductoModal({ p, onClose, onSave, onFoto }) {
     } catch (err) { alert('No se pudo subir la foto: ' + (err.message || err)) }
     setSubiendo(false)
   }
+  const [mejora, setMejora] = useState(null)
+  const [procesando, setProcesando] = useState(false)
+  const mejorar = async () => {
+    setProcesando(true)
+    try { const blob = await mejorarConIA(p.negocio_id, f.imagen_url); setMejora({ blob, url: URL.createObjectURL(blob) }) }
+    catch (err) { alert(err.message || 'No se pudo mejorar la foto.') }
+    setProcesando(false)
+  }
+  const descartar = () => { if (mejora) URL.revokeObjectURL(mejora.url); setMejora(null) }
+  const usarMejora = async () => {
+    setSubiendo(true)
+    try {
+      const url = await subirFoto(p.negocio_id, p.id, mejora.blob, f.imagen_url, { sinComprimir: true })
+      const { error } = await supabase.from('productos').update({ imagen_url: url }).eq('id', p.id)
+      if (error) throw error
+      descartar(); setF(x => ({ ...x, imagen_url: url })); onFoto()
+    } catch (err) { alert('No se pudo guardar la foto: ' + (err.message || err)) }
+    setSubiendo(false)
+  }
+  const eliminar = async () => {
+    if (!confirm(`¿Eliminar "${p.nombre}" para siempre?\n\nSus ventas pasadas se conservan en los reportes. Si solo quieres ocultarlo, desmarca "Activo en el punto de venta".`)) return
+    const { error } = await supabase.from('productos').delete().eq('id', p.id)
+    if (fail(error)) return
+    borrarFoto(p.imagen_url); onFoto(); onClose()
+  }
   const quitar = async () => {
     if (!confirm('¿Quitar la foto de este producto?')) return
     const { error } = await supabase.from('productos').update({ imagen_url: null }).eq('id', p.id)
@@ -614,6 +746,21 @@ function ProductoModal({ p, onClose, onSave, onFoto }) {
           </div>
         </div>
         {subiendo && <p className="mu">Subiendo foto…</p>}
+        {f.imagen_url && !mejora && (
+          <button type="button" className="btn s ia" disabled={procesando || subiendo} onClick={mejorar}>
+            {procesando ? 'Mejorando… unos segundos' : '✨ Quitar fondo y mejorar con IA'}
+          </button>
+        )}
+        {mejora && (
+          <div className="mejora">
+            <figure><img src={f.imagen_url} alt="Foto original" /><figcaption>Original</figcaption></figure>
+            <figure><img src={mejora.url} alt="Foto mejorada" /><figcaption>Mejorada</figcaption></figure>
+            <div className="acts">
+              <button type="button" className="btn" disabled={subiendo} onClick={usarMejora}>Usar la mejorada</button>
+              <button type="button" className="btn s" onClick={descartar}>Descartar</button>
+            </div>
+          </div>
+        )}
         <label className="chk"><input type="checkbox" checked={f.en_linea} onChange={e => set('en_linea', e.target.checked)} /> Visible en la tienda en línea</label>
         <label className="chk"><input type="checkbox" checked={f.destacado} onChange={e => set('destacado', e.target.checked)} /> Destacado (aparece arriba)</label>
         <label className="chk"><input type="checkbox" checked={f.activo} onChange={e => set('activo', e.target.checked)} /> Activo en el punto de venta</label>
@@ -621,6 +768,7 @@ function ProductoModal({ p, onClose, onSave, onFoto }) {
           nombre: f.nombre.trim(), categoria: f.categoria.trim() || 'Otros', descripcion: f.descripcion || null,
           imagen_url: f.imagen_url || null, en_linea: f.en_linea, destacado: f.destacado, activo: f.activo,
         })}>Guardar</button>
+        <button type="button" className="btn s danger wide" onClick={eliminar}>🗑 Eliminar producto</button>
       </div>
     </div>
   )
@@ -853,7 +1001,7 @@ function Shell({ nid, admin }) {
             ) : <>
             {tab === 'v' && <Vender nid={nid} prods={prods} reload={reload} onTicket={imprimir} />}
             {tab === 'p' && <Pedidos nid={nid} tick={tick} reload={reload} />}
-            {tab === 'h' && <Ventas nid={nid} reload={reload} onTicket={imprimir} online={online} onSync={syncManual} />}
+            {tab === 'h' && <Ventas nid={nid} reload={reload} onTicket={imprimir} online={online} onSync={syncManual} admin={admin} />}
             {tab === 'j' && <Caja nid={nid} />}
             {tab === 's' && <Stock nid={nid} prods={prods} reload={reload} admin={admin} />}
             {tab === 'c' && <><div className="pagehead"><h1>Compras y gastos</h1></div><Compras nid={nid} prods={prods} reload={reload} /></>}
