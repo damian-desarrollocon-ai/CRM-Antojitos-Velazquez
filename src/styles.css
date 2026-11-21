@@ -174,3 +174,12 @@ input.n{width:84px;text-align:right;padding:8px 10px;margin:0}
 .mejora figure{margin:0;text-align:center}.mejora img{width:100%;aspect-ratio:1;object-fit:contain;background:#f4f1e8;border:1px solid var(--bd);border-radius:12px}
 .mejora figure:nth-child(2) img{background:#fff}.mejora figcaption{font-size:14px;color:var(--mu);margin-top:4px}
 .mejora .acts{grid-column:1/-1}
+
+/* ---------- gastos, reinversión y desglose ---------- */
+.card.hl{background:#111;color:#fff;border-color:#111}.card.hl .mu{color:#cfc7b8}.card.hl .tot{border-top:1px solid #444;margin-top:6px;padding-top:8px}
+.card.warn{background:#fff3bf;border-color:#f0dc7a}.card.okc{background:#d3f9d8;border-color:#a9e5b3}
+.alza2{color:#b45309;font-size:13px;font-weight:600;margin-top:2px}.card.hl .alza2{color:#ffd166}
+.costoprev{margin:8px 0 0;font-size:15px}.costoprev.alza{color:#b45309}
+select.mini{width:auto;margin:6px 0 0;padding:6px 10px;font-size:14px}
+.tight table{font-size:14px}.tight td,.tight th{padding:8px 6px}
+details summary{cursor:pointer;margin-top:6px}

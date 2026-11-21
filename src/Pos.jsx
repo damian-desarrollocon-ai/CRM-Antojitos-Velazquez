@@ -1004,7 +1004,7 @@ function Shell({ nid, admin }) {
             {tab === 'h' && <Ventas nid={nid} reload={reload} onTicket={imprimir} online={online} onSync={syncManual} admin={admin} />}
             {tab === 'j' && <Caja nid={nid} />}
             {tab === 's' && <Stock nid={nid} prods={prods} reload={reload} admin={admin} />}
-            {tab === 'c' && <><div className="pagehead"><h1>Compras y gastos</h1></div><Compras nid={nid} prods={prods} reload={reload} /></>}
+            {tab === 'c' && <><div className="pagehead"><h1>Compras y gastos</h1></div><Compras nid={nid} prods={prods} reload={reload} admin={admin} /></>}
             {tab === 'x' && <><div className="pagehead"><h1>Cierre y corte</h1></div><Cierre nid={nid} admin={admin} /></>}
             {tab === 'e' && <><div className="pagehead"><h1>Evolución del negocio</h1></div><Evolucion nid={nid} /></>}
             {tab === 'a' && admin && <Ajustes nid={nid} />}
